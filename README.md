@@ -179,3 +179,110 @@ var uncurried = add5.UnCurry();       // uncurried is Func<int, int, int>
 
 var x = uncurried(7, 3) + curried(5)(7)(3);    // 15 + 15
 ```
+name: observability-platform
+
+services:
+  aspire-dashboard:
+    image: ${ASPIRE_DASHBOARD_IMAGE:-mcr.microsoft.com/dotnet/aspire-dashboard:latest}
+    container_name: aspire-dashboard
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:18888
+      ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL: http://0.0.0.0:18889
+    ports:
+      - "127.0.0.1:18888:18888"
+    networks:
+      - telemetry
+
+  otel-collector:
+    image: ${OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib:latest}
+    container_name: otel-collector
+    restart: unless-stopped
+    command:
+      - "--config=/etc/otelcol-contrib/config.yaml"
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      - aspire-dashboard
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    networks:
+      - telemetry
+
+networks:
+  telemetry:
+    name: observability-telemetry
+    driver: bridge
+
+
+
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - http://localhost:4200
+            - http://127.0.0.1:4200
+          allowed_headers:
+            - "*"
+          max_age: 7200
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  otlp:
+    endpoint: aspire-dashboard:18889
+    tls:
+      insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions:
+    - health_check
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp]
+
+
+
+ASPIRE_DASHBOARD_IMAGE=mcr.microsoft.com/dotnet/aspire-dashboard:latest
+
+OTEL_COLLECTOR_IMAGE=otel/opentelemetry-collector-contrib:latest
+
+
+
+
+
+
+
